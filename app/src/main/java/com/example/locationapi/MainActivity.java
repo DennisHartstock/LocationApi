@@ -1,16 +1,23 @@
 package com.example.locationapi;
 
 import android.Manifest;
+import android.app.Activity;
+import android.content.Intent;
 import android.content.IntentSender;
 import android.content.pm.PackageManager;
 import android.location.Location;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Looper;
+import android.provider.Settings;
+import android.util.Log;
+import android.view.View;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
 
@@ -24,12 +31,14 @@ import com.google.android.gms.location.LocationServices;
 import com.google.android.gms.location.LocationSettingsRequest;
 import com.google.android.gms.location.LocationSettingsStatusCodes;
 import com.google.android.gms.location.SettingsClient;
+import com.google.android.material.snackbar.Snackbar;
 
 import java.text.DateFormat;
 import java.util.Date;
 
 public class MainActivity extends AppCompatActivity {
     private static final int CHECK_SETTINGS_CODE = 111;
+    private static final int REQUEST_LOCATION_PERMISSION = 222;
     private Button startLocationUpdatesButton;
     private Button stopLocationUpdatesButton;
     private TextView locationTextView;
@@ -43,7 +52,6 @@ public class MainActivity extends AppCompatActivity {
     private Location currentLocation;
 
     private boolean isLocationUpdatesActive;
-    private String locationUpdateTime;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -59,10 +67,23 @@ public class MainActivity extends AppCompatActivity {
         settingsClient = LocationServices.getSettingsClient(this);
 
         startLocationUpdatesButton.setOnClickListener(view -> startLocationUpdates());
+        stopLocationUpdatesButton.setOnClickListener(view -> stopLocationUpdates());
 
         buildLocationRequest();
         buildLocationCallback();
         buildLocationSettingsRequest();
+    }
+
+    private void stopLocationUpdates() {
+        if (!isLocationUpdatesActive) {
+            return;
+        }
+
+        fusedLocationClient.removeLocationUpdates(locationCallback).addOnCompleteListener(task -> {
+            isLocationUpdatesActive = false;
+            startLocationUpdatesButton.setEnabled(true);
+            stopLocationUpdatesButton.setEnabled(false);
+        });
     }
 
     private void startLocationUpdates() {
@@ -110,6 +131,27 @@ public class MainActivity extends AppCompatActivity {
                 });
     }
 
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+
+        if (requestCode == CHECK_SETTINGS_CODE) {
+            switch (resultCode) {
+                case Activity.RESULT_OK:
+                    Log.d("MainActivity", "User has agreed to change location settings");
+                    startLocationUpdates();
+                    break;
+                case Activity.RESULT_CANCELED:
+                    Log.d("MainActivity", "User has not agreed to change location settings");
+                    isLocationUpdatesActive = false;
+                    startLocationUpdatesButton.setEnabled(true);
+                    stopLocationUpdatesButton.setEnabled(false);
+                    updateLocationUI();
+                    break;
+            }
+        }
+    }
+
     private void buildLocationSettingsRequest() {
         LocationSettingsRequest.Builder builder = new LocationSettingsRequest.Builder();
         builder.addLocationRequest(locationRequest);
@@ -128,8 +170,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateLocationUI() {
-        locationTextView.setText(String.format("%s/%s", currentLocation.getLatitude(), currentLocation.getLongitude()));
-        locationUpdateTimeTextView.setText(DateFormat.getTimeInstance().format(new Date()));
+        if (currentLocation != null) {
+            locationTextView.setText(String.format("%s/%s", currentLocation.getLatitude(), currentLocation.getLongitude()));
+            locationUpdateTimeTextView.setText(DateFormat.getTimeInstance().format(new Date()));
+        }
     }
 
     private void buildLocationRequest() {
@@ -137,5 +181,68 @@ public class MainActivity extends AppCompatActivity {
         locationRequest.setInterval(10000);
         locationRequest.setFastestInterval(3000);
         locationRequest.setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopLocationUpdates();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        if (isLocationUpdatesActive && checkLocationPermission()) {
+            startLocationUpdates();
+        } else if (!checkLocationPermission()) {
+            requestLocationPermission();
+        }
+    }
+
+    private void requestLocationPermission() {
+        boolean shouldProvideRationale = ActivityCompat.shouldShowRequestPermissionRationale(this,
+                Manifest.permission.ACCESS_FINE_LOCATION);
+
+        if (shouldProvideRationale) {
+            showSnackBar("Location permission is needed for app functionality", "OK", view -> ActivityCompat.requestPermissions(MainActivity.this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQUEST_LOCATION_PERMISSION));
+        } else {
+            ActivityCompat.requestPermissions(MainActivity.this,
+                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQUEST_LOCATION_PERMISSION);
+        }
+    }
+
+    private void showSnackBar(final String mainText, final String action, View.OnClickListener listener) {
+        Snackbar.make(findViewById(android.R.id.content), mainText, Snackbar.LENGTH_INDEFINITE).setAction(action, listener).show();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
+        if (requestCode == REQUEST_LOCATION_PERMISSION) {
+            if (grantResults.length <= 0) {
+                Log.d("onRequestPermissionsResult", "Request was canceled");
+            } else if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                if (isLocationUpdatesActive) {
+                    startLocationUpdates();
+                }
+            } else {
+                showSnackBar("Turn on location on settings", "Settings", view -> {
+                    Intent intent = new Intent();
+                    intent.setAction(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    Uri uri = Uri.fromParts("package", BuildConfig.APPLICATION_ID, null);
+                    intent.setData(uri);
+                    intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                });
+            }
+        }
+    }
+
+    private boolean checkLocationPermission() {
+        int permissionState = ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION);
+        return permissionState == PackageManager.PERMISSION_GRANTED;
     }
 }
